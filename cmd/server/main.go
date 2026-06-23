@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"mdkit/internal/health"
+	"mdkit/internal/markdown"
 )
 
 func main() {
@@ -15,6 +16,9 @@ func main() {
 	// transport 层依赖 service 层;依赖单向,禁止反向(见 CLAUDE.md 架构要点)。
 	healthSvc := health.NewService("0.1.0")
 	mux.HandleFunc("GET /healthz", health.Handler(healthSvc))
+
+	mdSvc := markdown.NewService(markdown.NewMockLLM())
+	markdown.RegisterRoutes(mux, mdSvc)
 
 	const addr = ":8080"
 	log.Printf("mdkit listening on %s", addr)
