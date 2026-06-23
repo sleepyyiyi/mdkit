@@ -41,4 +41,35 @@ issue:
 
 ---
 
+## 5. 审查 XSS 防御（本项目特定）
+```
+审查 {{file}} 是否违反 CLAUDE.md「安全模型」三不变量:
+1. 所有文本是否先 html.EscapeString 再套标签(原始 HTML 不得直通)
+2. 生成 <a href> 前是否过 sanitizeURL scheme 白名单
+3. 是否输出了任何 on* 事件属性
+逐条给:是否命中/位置/修复。
+```
+- ✅ 正例（先转义后格式化）：
+  ```go
+  esc := html.EscapeString(text)
+  esc = reBold.ReplaceAllString(esc, "<strong>$1</strong>")
+  ```
+- ❌ 反例（原始输入直通 / 黑名单剥标签）：
+  ```go
+  out := "<p>" + userInput + "</p>"                       // 存储型 XSS
+  re := regexp.MustCompile(`<script.*?>.*?</script>`)     // 黑名单不可靠
+  ```
+
+## 6. 判断性能担忧是否成立（本项目特定）
+```
+有人提出 {{concern}}(如 ReDoS/内存)。结合本项目技术栈核实:
+- Go regexp 是 RE2(线性,无回溯) → 经典 ReDoS 不适用,不要照搬其他语言结论
+- 真实风险是无界输入内存 → 看是否有 MaxInputBytes + MaxBytesReader
+给出"成立/不成立 + 依据(实测 benchmark 或代码佐证)"。
+```
+- ✅ 正例（有依据地拒绝）：用 `BenchmarkParse_Pathological` 实测线性，证明 ReDoS 担忧不成立
+- ❌ 反例（无依据地照搬）：因为正则里有 `.*` 就断言 ReDoS，不核实 RE2 语义
+
+---
+
 > 新增高频 Prompt 时往这里加,并标注变量与至少 1 个正/反例。完整工程约定以 [CLAUDE.md](./CLAUDE.md) 为准。
