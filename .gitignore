@@ -1,0 +1,14 @@
+# 二进制 / 构建产物
+/bin/
+*.exe
+*.test
+*.out
+
+# 环境与密钥(禁止入库)
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp

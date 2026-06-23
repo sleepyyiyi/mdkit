@@ -1,0 +1,20 @@
+---
+description: internal 层规则摘要（完整宪法见 CLAUDE.md）
+globs:
+  - "internal/**/*.go"
+  - "cmd/**/*.go"
+alwaysApply: false
+---
+
+# 后端分层规则摘要
+
+> 仅摘要 + 指针。完整约定以根目录 [CLAUDE.md](../../CLAUDE.md) 为准,本文件不写新规则。
+
+- 分层:`transport(handler)` → `service(领域逻辑)` →(后续)`repository`;依赖**单向**,禁止反向。
+- `handler` 只做 HTTP 编解码与参数校验,**不写业务逻辑**;业务在 `service`。
+- **禁止**在 `handler` 内直接访问数据库 / 外部 IO,走 `service` / `repository`。
+- 依赖通过构造函数注入(`NewXxx`),便于测试替换;禁止包级全局可变状态。
+- 错误:对外不泄露内部堆栈 / SQL;对内 `log` 带上下文。
+- 导出符号必须有 doc comment;提交前 `gofmt` + `go vet` 零告警。
+
+新增模块参考 `internal/health/` 的 service/handler/test 三件套骨架。
