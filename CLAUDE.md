@@ -8,15 +8,25 @@
 
 ## 技术栈　〔官方资产: 系统架构〕
 - 语言/运行时：Go 1.22+
-- HTTP：标准库 `net/http`（`go 1.22` 的 `mux` 路由，方法+路径模式 `GET /healthz`）
-- 存储：⟪暂无，后续接入时在此写明（如 PostgreSQL + repository 层）⟫
-- 测试框架：Go 内置 `testing` + table-driven　← 起步就定，不写"暂无测试框架"
+- HTTP：标准库 `net/http`（`go 1.22` 的 `mux` 路由，方法+路径模式 `POST /convert`）
+- 存储：**无状态服务**，不持久化任何数据（转换/摘要均为纯函数式处理）。这是有意的安全设计——不可信输入不落盘。
+- LLM：接口抽象 `markdown.LLM`，当前 `MockLLM` 确定性实现；生产可替换为 OpenAI 兼容实现，接口不变
+- HTML 转义：标准库 `html.EscapeString`（不引第三方），消毒逻辑自管以保证可审计
+- 测试框架：Go 内置 `testing` + table-driven + benchmark
 
 ## 架构要点　〔官方资产: 系统架构〕
-- 分层：`传输(internal/<mod>/handler)` → `逻辑(internal/<mod>/service)` →（后续）`持久化(repository)`
-- 依赖方向：handler → service → repository；**禁止反向**，禁止 handler 直接访问数据库/外部 IO
+- 分层：`传输(internal/<mod>/handler)` → `逻辑(internal/<mod>/service)` → `领域(parser/sanitizer/llm)`
+- 依赖方向：handler → service → parser/sanitizer/llm；**禁止反向**，禁止 handler 直接调解析/消毒
 - 装配：`cmd/server/main.go` 只做 wire up（构造 service、注册路由），不写业务
-- 依赖注入：通过 `NewXxx` 构造函数注入，便于测试替换；禁止包级全局可变状态
+- 依赖注入：`LLM` 接口通过 `NewService(llm)` 注入，测试可替换为 `MockLLM`/`FailingLLM`；禁止包级全局可变状态
+
+## 安全模型（本项目核心）　〔官方资产: 系统架构 / 安全约定〕
+> 输入是**不可信的** Markdown，输出会被浏览器渲染——这是一个 XSS 攻击面。三条不可违反的不变量：
+1. **先转义后格式化**：所有文本进入 `inline()` 时先 `html.EscapeString`，再套受控标签。原始 HTML（`<script>` 等）一律渲染为字面文本，绝不直通。
+2. **URL scheme 白名单**：生成 `<a href>` 前必过 `sanitizeURL`，只放行 `http/https/mailto` 与相对 URL；`javascript:`/`data:`/`vbscript:` 等一律降级为纯文本。
+3. **永不输出事件属性**：解析器只产出固定标签集，从不发出 `on*` 属性；用户无法注入属性。
+- 输入大小上限 `MaxInputBytes`（1 MiB），transport 层 `http.MaxBytesReader` + service 层双重校验。
+- Markdown 解析为**文档化子集**（标题/强调/行内代码/代码块/链接/有序无序列表/引用/段落）；超出范围的语法（如 URL 内嵌套括号）按已知限制处理，见 README。
 
 ## 接口约定　〔官方资产: 接口约定〕
 - 领域模型与 service 同包（如 `health.Status`）；DTO 用 struct tag 控制 JSON 序列化
@@ -54,21 +64,22 @@
 - 见 [prompt-library.md](./prompt-library.md)（高频任务可复用 Prompt + 正反例）
 
 ## 典型示例　〔官方资产: 典型示例〕
-- 新增一个业务模块的标准骨架（service 持逻辑、handler 只编解码）：
+- 正例：文本进入输出前**先转义再格式化**（安全不变量 1）：
   ```go
-  // internal/order/service.go
-  package order
-
-  type Order struct {
-      ID    string `json:"id"`
-      Total int    `json:"total"`
+  // internal/markdown/parser.go
+  func inline(text string) string {
+      esc := html.EscapeString(text)        // ← 先转义，原始 HTML 变字面量
+      esc = reBold.ReplaceAllString(esc, "<strong>$1</strong>")
+      esc = reLink.ReplaceAllStringFunc(esc, renderLink) // ← URL 过白名单
+      return esc
   }
-
-  type Service struct{ repo Repository }
-
-  func NewService(repo Repository) *Service { return &Service{repo: repo} }
-
-  func (s *Service) Get(id string) (Order, error) { return s.repo.Find(id) }
+  ```
+- 反例（**禁止**）：直接拼接用户输入到 HTML / 凭正则"剥离" script 标签：
+  ```go
+  // 错误：原始 HTML 直通 → 存储型/反射型 XSS
+  out := "<p>" + userInput + "</p>"
+  // 错误：正则解析 HTML 不可靠，且诱导用 .*? 回溯
+  re := regexp.MustCompile(`<script.*?>.*?</script>`) // 既漏又招黑
   ```
 
 ---

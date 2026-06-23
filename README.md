@@ -1,41 +1,89 @@
-# mdkit
+# mdkit — 安全 Markdown→HTML 转换服务
 
-安全的 Markdown→HTML 转换服务：把不可信 Markdown 转成经过消毒(防 XSS)的 HTML，并提供 LLM 文档摘要(带 prompt 注入防御与失败降级)。给内部文档系统/AI Agent 用。
+把**不可信** Markdown 转成经过消毒(防 XSS)的 HTML，并提供带 prompt 注入防御与失败降级的 LLM 文档摘要。给内部文档系统 / AI Agent 用。
 
-> Go 后端，L2 达标起步骨架（由 l2-init 生成）。完整工程约定见 [CLAUDE.md](./CLAUDE.md)。
+> Go 后端，L2 达标 greenfield 项目（骨架由 l2-init 生成，业务自填）。
+> 完整工程约定见 [CLAUDE.md](./CLAUDE.md)，安全模型是核心，务必先读。
 
 ## 运行
 
 ```bash
 go mod tidy
 go run ./cmd/server        # 起服务,默认 :8080
-curl localhost:8080/healthz
+
+# 转换（含 XSS 中和演示）
+curl -s -X POST localhost:8080/convert -H 'Content-Type: application/json' \
+  -d '{"markdown":"# Hi\n\n<script>alert(1)</script>\n\n[ok](https://go.dev) [evil](javascript:alert(1))"}'
+
+# 摘要（LLM + 失败降级）
+curl -s -X POST localhost:8080/summarize -H 'Content-Type: application/json' \
+  -d '{"markdown":"The quick brown fox jumps over the lazy dog.","max_words":5}'
+
+curl -s localhost:8080/healthz
 ```
 
 ## 验收（提交前全绿）
 
 ```bash
 go vet ./...
-go test ./...
+go test -race ./...
 go build ./...
+go test -bench=BenchmarkParse_Pathological -benchtime=20x ./internal/markdown/
 ```
 
-## 结构
+## 接口
+
+| 方法 | 路径 | 入参 | 出参 |
+|---|---|---|---|
+| POST | `/convert` | `{"markdown":"..."}` | `{"html":"...","bytes":N}` |
+| POST | `/summarize` | `{"markdown":"...","max_words":N}` | `{"summary":"...","ai_available":bool}` |
+| GET | `/healthz` | — | `{"ok":true,"version":"..."}` |
+
+## 安全模型（核心）
+
+输入不可信、输出会被浏览器渲染——这是 XSS 攻击面。三条不可违反的不变量（详见 CLAUDE.md）：
+
+1. **先转义后格式化**：所有文本先 `html.EscapeString`，原始 HTML（`<script>` 等）一律渲染为字面文本。
+2. **URL scheme 白名单**：`<a href>` 只放行 `http/https/mailto` + 相对 URL；`javascript:`/`data:`/`vbscript:` 降级为纯文本。
+3. **永不输出事件属性**：只产出固定标签集，从不发出 `on*` 属性。
+
+外加：输入上限 `MaxInputBytes`(1 MiB)，service + transport 双层校验；无状态，不落盘。
+
+## 项目结构
 
 ```
-cmd/server/main.go          入口:装配 service + 注册路由
-internal/health/            示例业务模块(按真实领域复制改名)
-  service.go                领域模型 + 业务逻辑
-  handler.go                HTTP 编解码(只编解码,不写业务)
-  handler_test.go           table-driven 单测
-.cursor/rules/go.mdc        分层规则摘要(指向 CLAUDE.md)
-.github/                    issue / PR 模板 + CI 门禁
-PLAN.md / QA_REPORT.md      任务规划 / 质量报告(维度②③)
-review-checklist.md         合并前 Review 清单
+cmd/server/main.go              入口:装配 service + 注册路由
+internal/
+  markdown/                  ★ 核心业务模块
+    model.go                    请求响应体 + MaxInputBytes
+    parser.go                   受控子集解析(先转义后格式化)
+    parser_test.go              基础格式 + XSS + 边界 + benchmark
+    sanitizer.go                URL scheme 白名单(安全核心)
+    sanitizer_test.go           16 个 URL 消毒用例
+    llm.go                      LLM 接口 + MockLLM + FailingLLM + buildPrompt(注入防御)
+    service.go                  编排(转换/摘要/降级)+ 输入上限
+    service_test.go             正常/超限/降级/取消/注入防御
+    handler.go                  HTTP 编解码(2 路由)+ MaxBytesReader
+    handler_test.go             正常/XSS 中和/无效 JSON/超限
+  health/                       健康检查(脚手架示例)
+.cursor/rules/go.mdc            分层规则摘要(指向 CLAUDE.md)
+.claude/skills/sanitized-block/ 自定义 Skill:新增受控渲染块的标准流程
+.github/                        issue / PR 模板 + CI 门禁(vet + test + build)
+CLAUDE.md                       项目宪法(官方 10 类资产 + 安全模型 + 单一真相)
+PLAN.md                         任务规划(2 天,每子任务四要素)
+QA_REPORT.md                    质量报告(AI Review 5 条 + 性能/安全/稳定性)
+review-checklist.md             Review 四象限清单
+prompt-library.md               Prompt 模板库(含 XSS/性能核实正反例)
 ```
+
+## 已知限制（诚实标注）
+
+- 解析器是**文档化子集**，非完整 CommonMark：不支持表格、任务列表、URL 内嵌套括号（如 `[x](a(b))` 会留尾随字符，但安全无虞）。
+- `MockLLM` 是确定性占位实现（取前 N 词），非真实模型；生产替换 `markdown.LLM` 接口即可。
+- 生产级消毒建议用久经考验的 `goldmark` + `bluemonday`；本项目手写消毒是为可审计 + 学习威胁模型（见 QA_REPORT §2 Review #1）。
 
 ## L2 三维度
 
-- **资产沉淀**：[CLAUDE.md](./CLAUDE.md) 覆盖官方 10 类资产 + 单一真相
-- **任务规划**：写 issue（目标/约束/风险）→ 填 [PLAN.md](./PLAN.md) → 分支 → PR（Closes #）
-- **质量保障**：测试 + [review-checklist.md](./review-checklist.md)（含性能/安全）+ CI 门禁 + [QA_REPORT.md](./QA_REPORT.md)
+- **资产沉淀**：[CLAUDE.md](./CLAUDE.md) 覆盖官方 10 类资产 + 安全模型 + 单一真相；`LLM` 接口抽象；自定义 Skill；prompt-library 含 XSS/性能核实正反例
+- **任务规划**：[PLAN.md](./PLAN.md) 2 天拆解，每子任务含输入/产出/验证/人工检查点；风险登记 6 条（XSS/危险 URL/ReDoS/内存/LLM 降级/prompt 注入）
+- **质量保障**：19 测试函数/61 用例(`-race`)+ benchmark + [QA_REPORT.md](./QA_REPORT.md)（5 条 AI Review，含 2 条「看似合理但被拒」）+ 性能/安全/稳定性三线检查 + CI 门禁
