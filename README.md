@@ -5,21 +5,45 @@
 > Go 后端，L2 达标 greenfield 项目（骨架由 l2-init 生成，业务自填）。
 > 完整工程约定见 [CLAUDE.md](./CLAUDE.md)，安全模型是核心，务必先读。
 
-## 运行
+## 快速上手 — 命令行（推荐）
 
 ```bash
-go mod tidy
-go run ./cmd/server        # 起服务,默认 :8080
+go build -o mdkit ./cmd/mdkit
 
-# 转换（含 XSS 中和演示）
-curl -s -X POST localhost:8080/convert -H 'Content-Type: application/json' \
-  -d '{"markdown":"# Hi\n\n<script>alert(1)</script>\n\n[ok](https://go.dev) [evil](javascript:alert(1))"}'
+# Markdown → HTML 输出到终端
+mdkit convert README.md
 
-# 摘要（LLM + 失败降级）
-curl -s -X POST localhost:8080/summarize -H 'Content-Type: application/json' \
-  -d '{"markdown":"The quick brown fox jumps over the lazy dog.","max_words":5}'
+# Markdown → 可浏览器打开的 HTML 文件
+mdkit convert README.md -o output.html
 
-curl -s localhost:8080/healthz
+# 从 stdin 管道输入
+cat doc.md | mdkit convert -
+
+# 文档摘要
+mdkit summarize README.md -n 20
+
+# 启动 HTTP API 服务
+mdkit serve
+mdkit serve -addr :3000
+
+# 帮助
+mdkit help
+```
+
+## 快速上手 — HTTP API
+
+```bash
+go run ./cmd/server        # 或 mdkit serve
+
+# 转换（含 XSS 中和）
+curl -X POST localhost:8080/convert -H 'Content-Type: application/json' \
+  -d '{"markdown":"# Hi\n\n<script>alert(1)</script>\n\n[ok](https://go.dev)"}'
+
+# 摘要
+curl -X POST localhost:8080/summarize -H 'Content-Type: application/json' \
+  -d '{"markdown":"The quick brown fox.","max_words":5}'
+
+curl localhost:8080/healthz
 ```
 
 ## 验收（提交前全绿）
@@ -27,11 +51,22 @@ curl -s localhost:8080/healthz
 ```bash
 go vet ./...
 go test -race ./...
-go build ./...
+go build ./cmd/mdkit ./cmd/server
 go test -bench=BenchmarkParse_Pathological -benchtime=20x ./internal/markdown/
 ```
 
 ## 接口
+
+### CLI
+
+| 命令 | 说明 |
+|---|---|
+| `mdkit convert <file.md> [-o out.html]` | Markdown→消毒 HTML（stdout 或文件） |
+| `mdkit convert -` | 从 stdin 读 |
+| `mdkit summarize <file.md> [-n N]` | 文档摘要（默认 40 词） |
+| `mdkit serve [-addr :8080]` | 启动 HTTP API |
+
+### HTTP
 
 | 方法 | 路径 | 入参 | 出参 |
 |---|---|---|---|
@@ -52,7 +87,9 @@ go test -bench=BenchmarkParse_Pathological -benchtime=20x ./internal/markdown/
 ## 项目结构
 
 ```
-cmd/server/main.go              入口:装配 service + 注册路由
+cmd/
+  mdkit/main.go              ★ 统一 CLI 入口(convert/summarize/serve)
+  server/main.go               纯 HTTP 入口(向后兼容)
 internal/
   markdown/                  ★ 核心业务模块
     model.go                    请求响应体 + MaxInputBytes
