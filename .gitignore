@@ -3,6 +3,9 @@
 *.exe
 *.test
 *.out
+/mdkit
+/server
+output.html
 
 # 环境与密钥(禁止入库)
 .env
